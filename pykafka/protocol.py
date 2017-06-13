@@ -171,6 +171,7 @@ class Message(Message, Serializable):
         "produce_attempt",
         "delivery_report_q",
         "protocol_version",
+        "compressed_offset",
         "timestamp"
     ]
 
@@ -183,8 +184,10 @@ class Message(Message, Serializable):
                  produce_attempt=0,
                  protocol_version=0,
                  timestamp=None,
+                 compressed_offset=False,
                  delivery_report_q=None):
         self.compression_type = compression_type
+        self.compressed_offset = compressed_offset
         self.partition_key = partition_key
         self.value = value
         self.offset = offset
@@ -814,14 +817,18 @@ class FetchResponse(Response):
         for message in message_set.messages:
             if message.compression_type == CompressionType.NONE:
                 output.append(message)
+                continue
             elif message.compression_type == CompressionType.GZIP:
                 decompressed = compression.decode_gzip(message.value)
-                output += self._unpack_message_set(decompressed,
-                                                   partition_id=partition_id)
+                messages = self._unpack_message_set(decompressed,
+                                                    partition_id=partition_id)
             elif message.compression_type == CompressionType.SNAPPY:
                 decompressed = compression.decode_snappy(message.value)
-                output += self._unpack_message_set(decompressed,
-                                                   partition_id=partition_id)
+                messages = self._unpack_message_set(decompressed,
+                                                    partition_id=partition_id)
+            for message in messages:
+                message.compressed_offset = True
+            output += messages
         return output
 
 
