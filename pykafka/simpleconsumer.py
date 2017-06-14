@@ -936,7 +936,7 @@ class OwnedPartition(object):
             if not self.last_offset_received.can_precede(
                     message.message_offset, self._is_compacted_topic):
                 log.debug("Skipping enqueue for offset (%s) "
-                          "not following last_offset_consumed %s",
+                          "not following last_offset_received %s",
                           message.message_offset, self.last_offset_received)
                 continue
 

@@ -139,18 +139,16 @@ class MessageOffset(object):
 
     def can_precede(self, other, compressed_topic):
         """Can those two pairs follow one another?"""
-        def main_can_precede(first, second):
-            return (first + 1 == second) or (
-                compressed_topic and (first + 1 < second))
-
-        if self.sub is not None:
-            if other.sub is not None:
-                return (self.main == other.main and self.sub + 1 == other.sub) or (
-                    other.sub == 0 and main_can_precede(self.main, other.main))
-            else:
-                return main_can_precede(self.main, other.main)
+        if other.sub is None:
+            return (self.main + 1 == other.main) or (
+                compressed_topic and (self.main + 1 < other.main))
         else:
-            return other.sub in (0, None) and main_can_precede(self.main, other.main)
+            # Compressed message offset may not follow immediately
+            if self.sub is not None:
+                return (self.main == other.main and self.sub + 1 == other.sub) or (
+                    other.sub == 0 and self.main < other.main)
+            else:
+                return other.sub == 0 and self.main < other.main
 
     def next_main(self):
         return self.main + 1
