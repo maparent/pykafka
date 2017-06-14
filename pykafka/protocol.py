@@ -310,7 +310,7 @@ class Message(Message, Serializable):
     def message_offset(self):
         """A tuple that takes compressed offset into account
         for a total ordering"""
-        if self.compressed_in_offset:
+        if self.compressed_in_offset and self.protocol_version > 0:
             return MessageOffset(self.compressed_in_offset, self.offset)
         else:
             return MessageOffset(self.offset)
