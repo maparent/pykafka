@@ -127,6 +127,47 @@ class Response(object):
                 clsname, response))
 
 
+class MessageOffset(object):
+    """A message offset described as a pair:
+    the offset of the message or its containing compressed message,
+    and the offset of the submessage in its containing message, if any."""
+    __slots__ = ("main", "sub")
+
+    def __init__(self, main_offset, sub_offset=None):
+        self.main = main_offset
+        self.sub = sub_offset
+
+    def can_precede(self, other, compressed_topic):
+        """Can those two pairs follow one another?"""
+        def main_can_precede(first, second):
+            return (first + 1 == second) or (
+                compressed_topic and (first + 1 < second))
+
+        if self.sub is not None:
+            if other.sub is not None:
+                return (self.main == other.main and self.sub + 1 == other.sub) or (
+                    other.sub == 0 and main_can_precede(self.main, other.main))
+            else:
+                return main_can_precede(self.main, other.main)
+        else:
+            return other.sub in (0, None) and main_can_precede(self.main, other.main)
+
+    def next_main(self):
+        return self.main + 1
+
+    def next_message_offset(self):
+        return MessageOffset(self.main + 1)
+
+    def __str__(self):
+        if self.sub is None:
+            return repr(self.main)
+        else:
+            return repr((self.main, self.sub))
+
+    def __eq__(self, other):
+        return self.main == other.main and self.sub == other.sub
+
+
 class Message(Message, Serializable):
     """Representation of a Kafka Message
 
@@ -171,7 +212,7 @@ class Message(Message, Serializable):
         "produce_attempt",
         "delivery_report_q",
         "protocol_version",
-        "compressed_offset",
+        "compressed_in_offset",
         "timestamp"
     ]
 
@@ -184,10 +225,11 @@ class Message(Message, Serializable):
                  produce_attempt=0,
                  protocol_version=0,
                  timestamp=None,
-                 compressed_offset=False,
                  delivery_report_q=None):
         self.compression_type = compression_type
-        self.compressed_offset = compressed_offset
+        # Offset of message this one was compressed in, if appropriate.
+        # Set in FetchResponse._unpack_message_set
+        self.compressed_in_offset = None
         self.partition_key = partition_key
         self.value = value
         self.offset = offset
@@ -265,6 +307,15 @@ class Message(Message, Serializable):
         data = buffer(buff[(offset + 4):(offset + 4 + fmt_size)])
         crc = crc32(data) & 0xffffffff
         struct.pack_into('!I', buff, offset, crc)
+
+    @property
+    def message_offset(self):
+        """A tuple that takes compressed offset into account
+        for a total ordering"""
+        if self.compressed_in_offset:
+            return MessageOffset(self.compressed_in_offset, self.offset)
+        else:
+            return MessageOffset(self.offset)
 
     @property
     def timestamp_dt(self):
@@ -826,8 +877,8 @@ class FetchResponse(Response):
                 decompressed = compression.decode_snappy(message.value)
                 messages = self._unpack_message_set(decompressed,
                                                     partition_id=partition_id)
-            for message in messages:
-                message.compressed_offset = True
+            for msg in messages:
+                msg.compressed_in_offset = message.offset
             output += messages
         return output
 

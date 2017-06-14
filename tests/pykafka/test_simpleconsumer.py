@@ -14,12 +14,19 @@ except ImportError:
     gevent = None
 
 from pykafka import KafkaClient
+from pykafka.protocol import MessageOffset
 from pykafka.simpleconsumer import OwnedPartition, OffsetType
 from pykafka.test.utils import get_cluster, stop_cluster
 from pykafka.utils.compat import range, iteritems, get_string
 
 
 kafka_version = os.environ.get('KAFKA_VERSION', '0.8.0')
+
+
+class MockMessage(mock.Mock):
+    @property
+    def message_offset(self):
+        return MessageOffset(self.offset)
 
 
 class TestSimpleConsumer(unittest2.TestCase):
@@ -222,37 +229,37 @@ class TestOwnedPartition(unittest2.TestCase):
         msgval = "test"
         partition = mock.MagicMock()
         op = OwnedPartition(partition)
-        op.next_offset = offset
+        op.set_offset(offset - 1)
 
-        message = mock.Mock()
+        message = MockMessage()
         message.value = msgval
         message.offset = offset
 
         op.enqueue_messages([message])
         self.assertEqual(op.message_count, 1)
         ret_message = op.consume()
-        self.assertEqual(op.last_offset_consumed, message.offset)
-        self.assertEqual(op.next_offset, message.offset + 1)
+        self.assertEqual(op.last_offset_consumed, message.message_offset)
+        self.assertEqual(op.last_offset_received, message.message_offset)
         self.assertNotEqual(ret_message, None)
         self.assertEqual(ret_message.value, msgval)
 
     def test_partition_rejects_old_message(self):
         last_offset = 400
         op = OwnedPartition(None)
-        op.last_offset_consumed = last_offset
+        op.set_offset(last_offset)
 
-        message = mock.Mock()
+        message = MockMessage()
         message.value = "test"
         message.offset = 20
 
         op.enqueue_messages([message])
         self.assertEqual(op.message_count, 0)
         op.consume()
-        self.assertEqual(op.last_offset_consumed, last_offset)
+        self.assertEqual(op.last_offset_consumed.main, last_offset)
 
     def test_compacted_topic_partition_rejects_old_message_after_initial(self):
         last_offset = 400
-        message1 = mock.Mock()
+        message1 = MockMessage()
         message1.value = "first-test"
         message1.partition_id = 0
         message1.offset = last_offset
@@ -264,9 +271,9 @@ class TestOwnedPartition(unittest2.TestCase):
         self.assertEqual(op.message_count, 1)
         consumed_msg = op.consume()
         self.assertEqual(op.message_count, 0)
-        self.assertEqual(op.last_offset_consumed, last_offset)
+        self.assertEqual(op.last_offset_consumed.main, last_offset)
 
-        message2 = mock.Mock()
+        message2 = MockMessage()
         message2.value = "test"
         message2.partition_id = 0
         message2.offset = 20
@@ -274,7 +281,7 @@ class TestOwnedPartition(unittest2.TestCase):
         op.enqueue_messages([message2])
         self.assertEqual(op.message_count, 0)
         op.consume()
-        self.assertEqual(op.last_offset_consumed, last_offset)
+        self.assertEqual(op.last_offset_consumed.main, last_offset)
 
     def test_partition_consume_empty_queue(self):
         op = OwnedPartition(None)
@@ -290,13 +297,13 @@ class TestOwnedPartition(unittest2.TestCase):
         partition.id = 12345
 
         op = OwnedPartition(partition)
-        op.last_offset_consumed = 200
+        op.set_offset(200)
 
         request = op.build_offset_commit_request()
 
         self.assertEqual(request.topic_name, topic.name)
         self.assertEqual(request.partition_id, partition.id)
-        self.assertEqual(request.offset, op.last_offset_consumed + 1)
+        self.assertEqual(request.offset, op.last_offset_consumed.next_main())
         parsed_metadata = json.loads(get_string(request.metadata))
         self.assertEqual(parsed_metadata["consumer_id"], '')
         self.assertTrue(bool(parsed_metadata["hostname"]))
@@ -316,14 +323,16 @@ class TestOwnedPartition(unittest2.TestCase):
         self.assertEqual(request.partition_id, partition.id)
 
     def test_partition_offset_counters(self):
-        res = mock.Mock()
+        res = MockMessage()
         res.offset = 400
 
         op = OwnedPartition(None)
         op.set_offset(res.offset)
 
-        self.assertEqual(op.last_offset_consumed, res.offset)
-        self.assertEqual(op.next_offset, res.offset + 1)
+        self.assertEqual(op.last_offset_consumed, res.message_offset)
+        self.assertEqual(op.last_offset_received, res.message_offset)
+        self.assertTrue(op.last_offset_received.can_precede(
+            res.message_offset.next_message_offset(), False))
 
 
 if __name__ == "__main__":

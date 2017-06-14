@@ -69,7 +69,8 @@ class RdKafkaSimpleConsumer(SimpleConsumer):
                            for b in self._cluster.brokers.values())
         partition_ids = list(self._partitions_by_id.keys())
         start_offsets = [
-            self._partitions_by_id[p].next_offset for p in partition_ids]
+            self._partitions_by_id[p].last_offset_received.next_main()
+            for p in partition_ids]
         conf, topic_conf = self._mk_rdkafka_config_lists()
 
         self._rdk_consumer = _rd_kafka.Consumer()

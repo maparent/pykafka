@@ -41,7 +41,8 @@ from .exceptions import (UnknownError, OffsetOutOfRangeError, UnknownTopicOrPart
                          RequestTimedOut, UnknownMemberId, RebalanceInProgress,
                          IllegalGeneration, ERROR_CODES)
 from .protocol import (PartitionFetchRequest, PartitionOffsetCommitRequest,
-                       PartitionOffsetFetchRequest, PartitionOffsetRequest)
+                       PartitionOffsetFetchRequest, PartitionOffsetRequest,
+                       MessageOffset)
 from .utils.error_handlers import (handle_partition_responses, raise_error,
                                    build_parts_by_error, valid_int)
 
@@ -343,8 +344,8 @@ class SimpleConsumer(object):
     def held_offsets(self):
         """Return a map from partition id to held offset for each partition"""
         return {p.partition.id:
-                (OffsetType.EARLIEST if p.last_offset_consumed == -1
-                 else p.last_offset_consumed)
+                (OffsetType.EARLIEST if p.last_offset_consumed.main == -1
+                 else p.last_offset_consumed.main)
                 for p in itervalues(self._partitions_by_id)}
 
     def __del__(self):
@@ -829,8 +830,7 @@ class OwnedPartition(object):
         self._messages = Queue()
         self._messages_arrived = semaphore
         self._is_compacted_topic = compacted_topic
-        self.last_offset_consumed = -1
-        self.next_offset = 0
+        self.set_offset(-1)
         self.fetch_lock = handler.RLock() if handler is not None else threading.RLock()
         # include consumer id in offset metadata for debugging
         self._offset_metadata = {
@@ -865,8 +865,8 @@ class OwnedPartition(object):
             partition
         :type last_offset_consumed: int
         """
-        self.last_offset_consumed = last_offset_consumed
-        self.next_offset = last_offset_consumed + 1
+        self.last_offset_consumed = self.last_offset_received = MessageOffset(
+            last_offset_consumed)
 
     def build_offset_request(self, new_offset):
         """Create a :class:`pykafka.protocol.PartitionOffsetRequest` for this
@@ -894,7 +894,7 @@ class OwnedPartition(object):
         """
         return PartitionFetchRequest(
             self.partition.topic.name, self.partition.id,
-            self.next_offset, max_bytes)
+            self.last_offset_consumed.next_main(), max_bytes)
 
     def build_offset_commit_request(self):
         """Create a :class:`pykafka.protocol.PartitionOffsetCommitRequest`
@@ -903,7 +903,7 @@ class OwnedPartition(object):
         return PartitionOffsetCommitRequest(
             self.partition.topic.name,
             self.partition.id,
-            self.last_offset_consumed + 1,
+            self.last_offset_consumed.next_main(),
             int(time.time() * 1000),
             get_bytes('{}'.format(self._offset_metadata_json))
         )
@@ -920,7 +920,7 @@ class OwnedPartition(object):
         """Get a single message from this partition"""
         try:
             message = self._messages.get_nowait()
-            self.last_offset_consumed = message.offset
+            self.last_offset_consumed = message.message_offset
             return message
         except Empty:
             return None
@@ -933,12 +933,11 @@ class OwnedPartition(object):
         """
         for message in messages:
             # enforce ordering of messages
-            if not message.compressed_offset and (
-                    (self._is_compacted_topic and message.offset < self.next_offset) or
-                    (not self._is_compacted_topic and message.offset != self.next_offset)):
+            if not self.last_offset_received.can_precede(
+                    message.message_offset, self._is_compacted_topic):
                 log.debug("Skipping enqueue for offset (%s) "
-                          "not equal to next_offset (%s)",
-                          message.offset, self.next_offset)
+                          "not following last_offset_consumed %s",
+                          message.message_offset, self.last_offset_received)
                 continue
 
             message.partition = self.partition
@@ -947,7 +946,7 @@ class OwnedPartition(object):
                           self.partition.id, message.partition_id)
             message.partition_id = self.partition.id
             self._messages.put(message)
-            self.next_offset = message.offset + 1
+            self.last_offset_received = message.message_offset
 
             if self._messages_arrived is not None:
                 self._messages_arrived.release()
