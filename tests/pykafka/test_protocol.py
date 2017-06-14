@@ -257,7 +257,10 @@ class TestFetchAPI(unittest2.TestCase):
         """Helper to extract data from Message slots"""
         attr_names = protocol.Message.__slots__
         f = operator.attrgetter(*attr_names)
-        return dict(zip(attr_names, f(msg)))
+        d = dict(zip(attr_names, f(msg)))
+        # this is too unstable
+        d.pop('compressed_in_offset')
+        return d
 
     def test_request(self):
         preq = protocol.PartitionFetchRequest(b'test', 0, 1)
